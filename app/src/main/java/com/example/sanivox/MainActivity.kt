@@ -1,6 +1,8 @@
 package com.example.sanivox
 
 import android.Manifest
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Handler
@@ -40,6 +42,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import android.util.Log
+import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -174,18 +177,22 @@ class MainActivity : ComponentActivity() {
                     Log.i("Sanivox", "Palabra clave exacta 'dakota' detectada.")
 
                     lifecycleScope.launch {
-                        // 🔐 Apagar keywordService y esperar
                         apagarKeywordServiceConEspera()
+                        delay(200)
 
-                        delay(200) // Espera adicional
+                        if (transcripcionActiva.value) {
+                            Log.i("Sanivox", "Transcripción activa: se detiene por palabra clave.")
+                            detenerTranscripcion()
+                            return@launch // ⬅️ Esto impide que se continúe y se inicie otra transcripción
+                        }
 
-                        // ✅ Solo iniciar si el micro ya está libre y no hay otra transcripción
                         if (!isMicrophoneInUse() && speechService == null) {
+                            Log.i("Sanivox", "No hay transcripción activa: se inicia nueva.")
                             iniciarTranscripcion {
                                 Log.d("Sanivox", "Transcripción iniciada tras palabra clave.")
                             }
                         } else {
-                            Log.w("Sanivox", "No se pudo iniciar transcripción: micrófono ocupado o ya en uso.")
+                            Log.w("Sanivox", "No se pudo actuar tras palabra clave: micro ocupado o servicio activo.")
                         }
                     }
                 }
@@ -244,6 +251,11 @@ class MainActivity : ComponentActivity() {
                 speechService?.startListening(object : RecognitionListener {
                     override fun onPartialResult(hypothesis: String?) {
                         Log.d("Sanivox", "Parcial: $hypothesis")
+                        val texto = extraerTextoReconocido(hypothesis ?: "").trim()
+                        if (texto.contains("dakota", ignoreCase = true)) {
+                            Log.i("Sanivox", "Palabra clave detectada dentro de transcripción activa. Deteniendo...")
+                            detenerTranscripcion()
+                        }
                     }
 
                     override fun onResult(hypothesis: String?) {
@@ -287,8 +299,14 @@ class MainActivity : ComponentActivity() {
 
 
     private fun guardarYActualizar(textoPlano: String, actualizarUI: () -> Unit) {
+        val limpio = textoPlano
+            .replace("\\bdakota\\b".toRegex(RegexOption.IGNORE_CASE), "")
+            .trim()
+
+        if (limpio.isBlank()) return
+
         val timestamp = SimpleDateFormat("dd-MM-yyyy HH:mm:ss", Locale.getDefault()).format(Date())
-        val resultado = "$timestamp → $textoPlano"
+        val resultado = "$timestamp → $limpio"
         guardarTranscripcion(resultado)
 
         runOnUiThread {
@@ -296,6 +314,8 @@ class MainActivity : ComponentActivity() {
             actualizarTranscripciones?.invoke()
         }
     }
+
+
 
 
     fun detenerTranscripcion() {
@@ -352,8 +372,164 @@ class MainActivity : ComponentActivity() {
     }
 
 
+    /*fun generarArchivoJson(context: Context, carpeta: String): File? {
+        val carpetaTranscripciones = File(context.filesDir, "transcripciones/$carpeta")
+        if (!carpetaTranscripciones.exists()) return null
+
+        val transcripciones = carpetaTranscripciones.listFiles()
+            ?.sortedBy { it.name }
+            ?.mapNotNull { it.readTextOrNull() }
+            ?: return null
+
+        val jsonArray = org.json.JSONArray()
+        transcripciones.forEach { texto ->
+            val partes = texto.split("→")
+            val fecha = partes.getOrNull(0)?.trim() ?: ""
+            val contenido = partes.getOrNull(1)?.trim() ?: texto
+            val obj = JSONObject()
+            obj.put("fecha", fecha)
+            obj.put("contenido", contenido)
+            jsonArray.put(obj)
+        }
+
+        val resultado = JSONObject()
+        resultado.put("carpeta", carpeta)
+        resultado.put("transcripciones", jsonArray)
+
+        val archivoJson = File(context.cacheDir, "transcripciones_$carpeta.json")
+        archivoJson.writeText(resultado.toString(4)) // Formateado con indentación
+        return archivoJson
+    }
+
+    fun generarArchivoXml(context: Context, carpeta: String): File? {
+        val carpetaTranscripciones = File(context.filesDir, "transcripciones/$carpeta")
+        if (!carpetaTranscripciones.exists()) return null
+
+        val transcripciones = carpetaTranscripciones.listFiles()
+            ?.sortedBy { it.name }
+            ?.mapNotNull { it.readTextOrNull() }
+            ?: return null
+
+        val builder = StringBuilder()
+        builder.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+        builder.append("<transcripciones carpeta=\"$carpeta\">\n")
+
+        transcripciones.forEach { texto ->
+            val partes = texto.split("→")
+            val fecha = partes.getOrNull(0)?.trim() ?: ""
+            val contenido = partes.getOrNull(1)?.trim() ?: texto
+
+            builder.append("  <transcripcion>\n")
+            builder.append("    <fecha>${escapeXml(fecha)}</fecha>\n")
+            builder.append("    <contenido>${escapeXml(contenido)}</contenido>\n")
+            builder.append("  </transcripcion>\n")
+        }
+
+        builder.append("</transcripciones>")
+
+        val archivoXml = File(context.cacheDir, "transcripciones_$carpeta.xml")
+        archivoXml.writeText(builder.toString())
+        return archivoXml
+    }
+
+    fun escapeXml(input: String): String {
+        return input.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\"", "&quot;")
+            .replace("'", "&apos;")
+    }
 
 
+    fun generarArchivoPdf(context: Context, carpeta: String, transcripciones: List<String>): File? {
+        try {
+            if (transcripciones.isEmpty()) return null
+
+            val pdfDocument = android.graphics.pdf.PdfDocument()
+            val paint = android.graphics.Paint()
+            val pageInfo = android.graphics.pdf.PdfDocument.PageInfo.Builder(595, 842, 1).create()
+            val page = pdfDocument.startPage(pageInfo)
+            val canvas = page.canvas
+
+            val titlePaint = android.graphics.Paint().apply {
+                textSize = 18f
+                isFakeBoldText = true
+            }
+
+            var y = 30
+            canvas.drawText("Transcripciones - Carpeta: $carpeta", 20f, y.toFloat(), titlePaint)
+            y += 40
+
+            for ((i, linea) in transcripciones.withIndex()) {
+                val wrappedLines = dividirTextoEnLineas(linea, paint, canvas.width - 40)
+                for (wrappedLine in wrappedLines) {
+                    if (y >= 800) {
+                        pdfDocument.finishPage(page)
+                        val newPageInfo = android.graphics.pdf.PdfDocument.PageInfo.Builder(595, 842, i + 2).create()
+                        val newPage = pdfDocument.startPage(newPageInfo)
+                        canvas.drawText(wrappedLine, 20f, 30f, paint)
+                        y = 50
+                        continue
+                    }
+                    canvas.drawText(wrappedLine, 20f, y.toFloat(), paint)
+                    y += 20
+                }
+            }
+
+            pdfDocument.finishPage(page)
+
+            val carpetaPdf = File(context.filesDir, "exportaciones")
+            if (!carpetaPdf.exists()) carpetaPdf.mkdirs()
+            val archivoPdf = File(carpetaPdf, "transcripciones_${carpeta}_${System.currentTimeMillis()}.pdf")
+            archivoPdf.outputStream().use { pdfDocument.writeTo(it) }
+
+            pdfDocument.close()
+            return archivoPdf
+
+        } catch (e: Exception) {
+            Log.e("Sanivox", "Error generando PDF", e)
+            return null
+        }
+    }
+
+    private fun dividirTextoEnLineas(texto: String, paint: android.graphics.Paint, maxWidth: Int): List<String> {
+        val palabras = texto.split(" ")
+        val lineas = mutableListOf<String>()
+        var lineaActual = ""
+
+        for (palabra in palabras) {
+            val lineaTentativa = if (lineaActual.isEmpty()) palabra else "$lineaActual $palabra"
+            if (paint.measureText(lineaTentativa) <= maxWidth) {
+                lineaActual = lineaTentativa
+            } else {
+                lineas.add(lineaActual)
+                lineaActual = palabra
+            }
+        }
+
+        if (lineaActual.isNotEmpty()) lineas.add(lineaActual)
+
+        return lineas
+    }
+
+
+    fun compartirArchivo(context: Context, archivo: File, tipoMime: String = "application/json") {
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.provider",
+            archivo
+        )
+
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = tipoMime
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+
+        val chooser = Intent.createChooser(intent, "Compartir archivo")
+        context.startActivity(chooser)
+    }
+*/
 
 
     private suspend fun apagarKeywordServiceConEspera() {
@@ -442,12 +618,17 @@ class MainActivity : ComponentActivity() {
     fun extraerTextoReconocido(json: String): String {
         return try {
             val obj = JSONObject(json)
-            obj.getString("text")
+            when {
+                obj.has("text") -> obj.getString("text")
+                obj.has("partial") -> obj.getString("partial")
+                else -> ""
+            }
         } catch (e: Exception) {
-            android.util.Log.e("Sanivox", "Error al parsear JSON: $json", e)
+            Log.e("Sanivox", "Error al parsear JSON: $json", e)
             ""
         }
     }
+
 
     fun obtenerCarpetas(): List<String> {
         val base = File(filesDir, "transcripciones")

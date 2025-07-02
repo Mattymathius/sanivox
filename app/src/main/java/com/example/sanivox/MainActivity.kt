@@ -1,9 +1,11 @@
 package com.example.sanivox
 
 import android.Manifest
+import android.app.ProgressDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.AssetManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -42,12 +44,21 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import android.util.Log
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.FileOutputStream
+import java.io.IOException
 
 
 class MainActivity : ComponentActivity() {
@@ -72,17 +83,24 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
 
         solicitarPermisos()
+
         if (!packageManager.hasSystemFeature(PackageManager.FEATURE_MICROPHONE)) {
             Toast.makeText(this, "Este dispositivo no tiene micrófono", Toast.LENGTH_LONG).show()
             return
         }
 
-        copiarModeloDesdeAssets()
+        val modelo = "vosk-model-es-0.42"
+        val destino = File(filesDir, modelo)
+
+        if (!destino.exists()) {
+            copiarModeloRecursivo(modelo, destino)
+        }
 
         if (!cargarModeloVosk()) {
             Toast.makeText(this, "Error: No se encontró el modelo de voz", Toast.LENGTH_LONG).show()
         } else {
             Toast.makeText(this, "Modelo cargado correctamente", Toast.LENGTH_SHORT).show()
+
             if (inicializarKeywordRecognizer()) {
                 escucharPalabraClave {
                     runOnUiThread {
@@ -105,6 +123,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+
+
     private fun solicitarPermisos() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED) {
@@ -120,18 +140,44 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun cargarModeloVosk(): Boolean {
+    fun cargarModeloVosk(): Boolean {
         return try {
-            val modelPath = File(filesDir, "vosk-model-es-0.42")
-            if (!modelPath.exists()) return false
-            model = Model(modelPath.absolutePath)
+            model = Model(File(filesDir, "vosk-model-es-0.42").absolutePath)
             recognizer = Recognizer(model, 16000.0f)
             true
-        } catch (e: Exception) {
-            e.printStackTrace()
+        } catch (e: IOException) {
+            Log.e("Sanivox", "Error cargando modelo Vosk", e)
             false
         }
     }
+
+
+
+    fun copiarModeloRecursivo(assetPath: String, destino: File) {
+        try {
+            val archivos = assets.list(assetPath) ?: return
+
+            if (archivos.isEmpty()) {
+                val input = assets.open(assetPath)
+                val outFile = File(destino.parentFile, destino.name)
+                outFile.parentFile?.mkdirs()
+                val output = FileOutputStream(outFile)
+                input.copyTo(output)
+                input.close()
+                output.close()
+            } else {
+                // Es directorio
+                if (!destino.exists()) destino.mkdirs()
+                for (archivo in archivos) {
+                    copiarModeloRecursivo("$assetPath/$archivo", File(destino, archivo))
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("Sanivox", "Error copiando: $assetPath", e)
+        }
+    }
+
+
 
     private fun inicializarKeywordRecognizer(): Boolean {
         return try {
@@ -372,7 +418,7 @@ class MainActivity : ComponentActivity() {
     }
 
 
-    /*fun generarArchivoJson(context: Context, carpeta: String): File? {
+    fun generarArchivoJson(context: Context, carpeta: String): File? {
         val carpetaTranscripciones = File(context.filesDir, "transcripciones/$carpeta")
         if (!carpetaTranscripciones.exists()) return null
 
@@ -529,7 +575,7 @@ class MainActivity : ComponentActivity() {
         val chooser = Intent.createChooser(intent, "Compartir archivo")
         context.startActivity(chooser)
     }
-*/
+
 
 
     private suspend fun apagarKeywordServiceConEspera() {
@@ -575,23 +621,90 @@ class MainActivity : ComponentActivity() {
 
 
     private fun copiarModeloDesdeAssets() {
-        val modelName = "vosk-model-es-0.42"
-        val outDir = File(filesDir, modelName)
-        if (outDir.exists()) return
+        val assetManager = assets
+        val outputDir = File(filesDir, "vosk-model-es-0.42")
+
+        if (outputDir.exists()) {
+            Log.i("Sanivox", "Modelo ya existe, no se copia.")
+            return
+        }
 
         try {
-            val assetManager = assets
-            val files = assetManager.list(modelName) ?: return
-            outDir.mkdirs()
-            for (file in files) {
-                assetManager.open("$modelName/$file").use { input ->
-                    File(outDir, file).outputStream().use { output -> input.copyTo(output) }
-                }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
+            copyAssetFolder(assetManager, "vosk-model-es-0.42", outputDir.absolutePath)
+            Log.i("Sanivox", "Modelo copiado correctamente")
+        } catch (e: IOException) {
+            Log.e("Sanivox", "Error al copiar modelo: ${e.message}", e)
         }
     }
+
+    @Throws(IOException::class)
+    private fun copyAssetFolder(assetManager: AssetManager, srcFolder: String, destPath: String) {
+        val files = assetManager.list(srcFolder) ?: return
+        val destDir = File(destPath)
+        if (!destDir.exists()) destDir.mkdirs()
+
+        for (file in files) {
+            val srcFilePath = "$srcFolder/$file"
+            val destFilePath = "$destPath/$file"
+            val subFiles = assetManager.list(srcFilePath)
+
+            if (subFiles.isNullOrEmpty()) {
+                assetManager.open(srcFilePath).use { input ->
+                    FileOutputStream(destFilePath).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+            } else {
+                copyAssetFolder(assetManager, srcFilePath, destFilePath)
+            }
+        }
+    }
+
+    fun copiarModeloSiNoExiste() {
+        val modeloNombre = "vosk-model-es-0.42"
+        val destino = File(filesDir, modeloNombre)
+
+        if (destino.exists()) {
+            Log.d("Sanivox", "El modelo ya existe en ${destino.absolutePath}")
+            return
+        }
+
+        val progressDialog = ProgressDialog(this).apply {
+            setMessage("Preparando el modelo de voz...")
+            setCancelable(false)
+            show()
+        }
+
+        Thread {
+            try {
+                val archivos = assets.list(modeloNombre) ?: emptyArray()
+                archivos.forEachIndexed { index, archivo ->
+                    val input = assets.open("$modeloNombre/$archivo")
+                    val outFile = File(destino, archivo)
+                    outFile.parentFile?.mkdirs()
+                    val output = FileOutputStream(outFile)
+
+                    input.copyTo(output)
+
+                    input.close()
+                    output.close()
+                }
+
+                runOnUiThread {
+                    progressDialog.dismiss()
+                    Toast.makeText(this, "Modelo copiado correctamente", Toast.LENGTH_SHORT).show()
+                }
+
+            } catch (e: Exception) {
+                Log.e("Sanivox", "Error copiando el modelo: ${e.message}", e)
+                runOnUiThread {
+                    progressDialog.dismiss()
+                    Toast.makeText(this, "Error al copiar el modelo", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
 
     fun guardarTranscripcion(texto: String) {
         val carpeta = File(filesDir, "transcripciones/$carpetaActual")
@@ -656,29 +769,55 @@ class MainActivity : ComponentActivity() {
     fun cambiarCarpeta(nombre: String) {
         carpetaActual = nombre
     }
+
+    fun eliminarTranscripcion(texto: String) {
+        val carpeta = File(filesDir, "transcripciones/$carpetaActual")
+        if (!carpeta.exists()) return
+
+        carpeta.listFiles()?.forEach { archivo ->
+            if (archivo.readTextOrNull() == texto) {
+                archivo.delete()
+            }
+        }
+    }
+
 }
 
 
-
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TranscriptionScreen(modifier: Modifier = Modifier) {
-
+    val context = LocalContext.current as MainActivity
     val transcripciones = remember { mutableStateListOf<String>() }
-    var expanded by remember { mutableStateOf(false) }
+    var filtroBusqueda by remember { mutableStateOf("") }
+    var carpetaActual by remember { mutableStateOf(context.carpetaActual) }
+    var carpetas by remember { mutableStateOf(context.obtenerCarpetas()) }
+
+    val transcripcionActiva = context.transcripcionActiva
+    val transcripcionesSeleccionadas = remember { mutableStateListOf<String>() }
+    var modoSeleccion by remember { mutableStateOf(false) }
+
+    // Menús desplegables
+    var menuCarpetaExpandido by remember { mutableStateOf(false) }
+    var menuOpcionesExpandido by remember { mutableStateOf(false) }
     var mostrarDialogoCrear by remember { mutableStateOf(false) }
     var mostrarDialogoRenombrar by remember { mutableStateOf(false) }
     var mostrarDialogoBorrar by remember { mutableStateOf(false) }
+    var menuCompartirExpandido by remember { mutableStateOf(false) }
+    var menuBorrarExpandido by remember { mutableStateOf(false) }
+
     var nombreNuevaCarpeta by remember { mutableStateOf("") }
     var nuevoNombreCarpeta by remember { mutableStateOf("") }
-    var filtroBusqueda by remember { mutableStateOf("") }
-    val context = LocalContext.current as MainActivity
+
     context.actualizarTranscripciones = {
         transcripciones.clear()
         transcripciones.addAll(context.leerTranscripciones(filtroBusqueda))
     }
-    var carpetaActual by remember { mutableStateOf(context.carpetaActual) }
-    var carpetas by remember { mutableStateOf(context.obtenerCarpetas()) }
-    val transcripcionActiva = context.transcripcionActiva
+
+    BackHandler(enabled = modoSeleccion) {
+        transcripcionesSeleccionadas.clear()
+        modoSeleccion = false
+    }
 
     LaunchedEffect(carpetaActual) {
         context.cambiarCarpeta(carpetaActual)
@@ -686,47 +825,69 @@ fun TranscriptionScreen(modifier: Modifier = Modifier) {
         transcripciones.addAll(context.leerTranscripciones(filtroBusqueda))
     }
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(16.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
+    Column(modifier = modifier.fillMaxSize().padding(16.dp)) {
+
+        // SECCIÓN SUPERIOR: Carpeta activa y menú
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Column {
                 Text("Carpeta activa:", style = MaterialTheme.typography.labelLarge)
-                Box {
-                    Button(onClick = { expanded = true }) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Button(onClick = { menuCarpetaExpandido = true }) {
                         Text(carpetaActual)
                     }
-                    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                        carpetas.forEach { nombre ->
+                    Spacer(Modifier.width(8.dp))
+                    Box {
+                        IconButton(onClick = { menuOpcionesExpandido = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "Más opciones")
+                        }
+                        DropdownMenu(
+                            expanded = menuOpcionesExpandido,
+                            onDismissRequest = { menuOpcionesExpandido = false }
+                        ) {
                             DropdownMenuItem(
-                                text = { Text(nombre) },
+                                text = { Text("Nueva carpeta") },
                                 onClick = {
-                                    carpetaActual = nombre
-                                    expanded = false
+                                    mostrarDialogoCrear = true
+                                    menuOpcionesExpandido = false
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Renombrar carpeta") },
+                                onClick = {
+                                    mostrarDialogoRenombrar = true
+                                    menuOpcionesExpandido = false
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Eliminar carpeta") },
+                                onClick = {
+                                    mostrarDialogoBorrar = true
+                                    menuOpcionesExpandido = false
                                 }
                             )
                         }
                     }
                 }
-            }
-            Column(horizontalAlignment = Alignment.End) {
-                Button(onClick = { mostrarDialogoCrear = true }) {
-                    Text("+ Nueva carpeta")
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = { mostrarDialogoRenombrar = true }) { Text("Renombrar") }
-                    TextButton(onClick = { mostrarDialogoBorrar = true }) { Text("Eliminar") }
+                DropdownMenu(
+                    expanded = menuCarpetaExpandido,
+                    onDismissRequest = { menuCarpetaExpandido = false }
+                ) {
+                    carpetas.forEach { nombre ->
+                        DropdownMenuItem(
+                            text = { Text(nombre) },
+                            onClick = {
+                                carpetaActual = nombre
+                                menuCarpetaExpandido = false
+                            }
+                        )
+                    }
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(Modifier.height(12.dp))
 
+        // CAMPO DE BÚSQUEDA
         OutlinedTextField(
             value = filtroBusqueda,
             onValueChange = {
@@ -738,37 +899,28 @@ fun TranscriptionScreen(modifier: Modifier = Modifier) {
             modifier = Modifier.fillMaxWidth()
         )
 
-        Text(
-            text = "Historial de Transcripciones",
-            style = MaterialTheme.typography.headlineSmall,
-            modifier = Modifier.padding(vertical = 12.dp)
-        )
+        Spacer(Modifier.height(12.dp))
+        Text("Historial de Transcripciones", style = MaterialTheme.typography.headlineSmall)
 
+        // LISTADO DE TRANSCRIPCIONES
         Column(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .padding(end = 4.dp)
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            if (context.transcripcionActiva.value) {
+            if (transcripcionActiva.value) {
                 val alphaAnim by animateFloatAsState(
-                    targetValue = if (context.transcripcionActiva.value) 1f else 0f,
+                    targetValue = 1f,
                     animationSpec = infiniteRepeatable(
                         animation = tween(durationMillis = 1000, easing = FastOutSlowInEasing),
                         repeatMode = RepeatMode.Reverse
                     ), label = ""
                 )
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
+                Box(Modifier.fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) {
                     Text(
-                        text = "● Grabando...",
+                        "● Grabando...",
                         color = Color.Red,
                         fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.Center,
@@ -776,18 +928,141 @@ fun TranscriptionScreen(modifier: Modifier = Modifier) {
                     )
                 }
             }
+
             if (transcripciones.isEmpty()) {
                 Text("Esperando transcripción...", style = MaterialTheme.typography.bodyLarge)
             } else {
                 transcripciones.forEach { linea ->
-                    TranscripcionCard(linea)
+                    val seleccionada = transcripcionesSeleccionadas.contains(linea)
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .combinedClickable(
+                                onClick = {
+                                    if (modoSeleccion) {
+                                        if (seleccionada) transcripcionesSeleccionadas.remove(linea)
+                                        else transcripcionesSeleccionadas.add(linea)
+                                    }
+                                },
+                                onLongClick = {
+                                    modoSeleccion = true
+                                    transcripcionesSeleccionadas.add(linea)
+                                }
+                            ),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (seleccionada)
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
+                            else MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
+                        )
+                    ) {
+                        Column(Modifier.padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (seleccionada) {
+                                    Icon(Icons.Default.Check, contentDescription = null)
+                                    Spacer(Modifier.width(8.dp))
+                                }
+                                Text(linea.substringAfter("→").trim())
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                linea.substringBefore("→").trim(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+                        }
+                    }
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(Modifier.height(12.dp))
 
-        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+        // NUEVA FILA: BOTONES BORRAR Y COMPARTIR
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            // NUEVA FILA: BOTONES COMPARTIR Y BORRAR (INTERCAMBIADOS)
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                // Botón Compartir (izquierda)
+                Box {
+                    Button(onClick = { menuCompartirExpandido = true }) {
+                        Text("Compartir")
+                    }
+                    DropdownMenu(
+                        expanded = menuCompartirExpandido,
+                        onDismissRequest = { menuCompartirExpandido = false }
+                    ) {
+                        DropdownMenuItem(text = { Text("Exportar JSON") }, onClick = {
+                            val file = context.generarArchivoJson(context, carpetaActual)
+                            if (file != null) {
+                                context.compartirArchivo(context, file, "application/json")
+                            }
+                            menuCompartirExpandido = false
+                        })
+                        DropdownMenuItem(text = { Text("Exportar XML") }, onClick = {
+                            val file = context.generarArchivoXml(context, carpetaActual)
+                            if (file != null) {
+                                context.compartirArchivo(context, file, "application/xml")
+                            }
+                            menuCompartirExpandido = false
+                        })
+                        DropdownMenuItem(text = { Text("Exportar PDF") }, onClick = {
+                            val seleccionadas =
+                                transcripcionesSeleccionadas.ifEmpty { transcripciones }.toList()
+                            val file =
+                                context.generarArchivoPdf(context, carpetaActual, seleccionadas)
+                            if (file != null) {
+                                context.compartirArchivo(context, file, "application/pdf")
+                            }
+                            menuCompartirExpandido = false
+                        })
+                    }
+                }
+
+                // Botón Borrar (derecha)
+                Box {
+                    Button(onClick = { menuBorrarExpandido = true }) {
+                        Text("Borrar")
+                    }
+                    DropdownMenu(
+                        expanded = menuBorrarExpandido,
+                        onDismissRequest = { menuBorrarExpandido = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Borrar todas") },
+                            onClick = {
+                                context.borrarTranscripciones()
+                                transcripciones.clear()
+                                transcripcionesSeleccionadas.clear()
+                                modoSeleccion = false
+                                menuBorrarExpandido = false
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Borrar seleccionadas") },
+                            onClick = {
+                                transcripcionesSeleccionadas.forEach {
+                                    context.eliminarTranscripcion(it)
+                                    transcripciones.remove(it)
+                                }
+                                transcripcionesSeleccionadas.clear()
+                                modoSeleccion = false
+                                menuBorrarExpandido = false
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+            Spacer(Modifier.height(8.dp))
+
+        // FILA FINAL: Iniciar y Detener
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
                 onClick = {
                     context.cambiarCarpeta(carpetaActual)
@@ -797,100 +1072,149 @@ fun TranscriptionScreen(modifier: Modifier = Modifier) {
                     }
                 },
                 modifier = Modifier.weight(1f)
-            ) { Text("Iniciar") }
+            ) {
+                Text("Iniciar")
+            }
 
             Button(
                 onClick = { context.detenerTranscripcion() },
                 modifier = Modifier.weight(1f)
-            ) { Text("Detener") }
-
-            Button(
-                onClick = {
-                    context.borrarTranscripciones()
-                    transcripciones.clear()
-                },
-                modifier = Modifier.weight(1f)
-            ) { Text("Borrar") }
+            ) {
+                Text("Detener")
+            }
         }
     }
 
+    // Diálogos
     if (mostrarDialogoCrear) {
-        AlertDialog(
-            onDismissRequest = { mostrarDialogoCrear = false },
-            confirmButton = {
-                Button(onClick = {
-                    if (nombreNuevaCarpeta.isNotBlank()) {
-                        context.crearCarpeta(nombreNuevaCarpeta)
-                        carpetas = context.obtenerCarpetas()
-                        carpetaActual = nombreNuevaCarpeta
-                        context.cambiarCarpeta(nombreNuevaCarpeta)
-                        transcripciones.clear()
-                        transcripciones.addAll(context.leerTranscripciones(filtroBusqueda))
-                        nombreNuevaCarpeta = ""
-                        mostrarDialogoCrear = false
-                    }
-                }) { Text("Crear") }
+        DialogCrearCarpeta(
+            nombreNuevaCarpeta,
+            onNombreChange = { nombreNuevaCarpeta = it },
+            onConfirmar = {
+                if (nombreNuevaCarpeta.isNotBlank()) {
+                    context.crearCarpeta(nombreNuevaCarpeta)
+                    carpetas = context.obtenerCarpetas()
+                    carpetaActual = nombreNuevaCarpeta
+                    context.cambiarCarpeta(nombreNuevaCarpeta)
+                    transcripciones.clear()
+                    transcripciones.addAll(context.leerTranscripciones(filtroBusqueda))
+                    nombreNuevaCarpeta = ""
+                    mostrarDialogoCrear = false
+                }
             },
-            dismissButton = { Button(onClick = { mostrarDialogoCrear = false }) { Text("Cancelar") } },
-            title = { Text("Nueva carpeta") },
-            text = {
-                OutlinedTextField(
-                    value = nombreNuevaCarpeta,
-                    onValueChange = { nombreNuevaCarpeta = it },
-                    label = { Text("Nombre de la carpeta") }
-                )
-            }
+            onCancelar = { mostrarDialogoCrear = false }
         )
     }
 
     if (mostrarDialogoRenombrar) {
-        AlertDialog(
-            onDismissRequest = { mostrarDialogoRenombrar = false },
-            confirmButton = {
-                Button(onClick = {
-                    if (nuevoNombreCarpeta.isNotBlank()) {
-                        context.renombrarCarpeta(carpetaActual, nuevoNombreCarpeta)
-                        carpetaActual = nuevoNombreCarpeta
-                        carpetas = context.obtenerCarpetas()
-                        context.cambiarCarpeta(nuevoNombreCarpeta)
-                        transcripciones.clear()
-                        transcripciones.addAll(context.leerTranscripciones(filtroBusqueda))
-                        mostrarDialogoRenombrar = false
-                    }
-                }) { Text("Renombrar") }
+        DialogRenombrarCarpeta(
+            nuevoNombreCarpeta,
+            onNombreChange = { nuevoNombreCarpeta = it },
+            onConfirmar = {
+                if (nuevoNombreCarpeta.isNotBlank()) {
+                    context.renombrarCarpeta(carpetaActual, nuevoNombreCarpeta)
+                    carpetaActual = nuevoNombreCarpeta
+                    carpetas = context.obtenerCarpetas()
+                    context.cambiarCarpeta(nuevoNombreCarpeta)
+                    transcripciones.clear()
+                    transcripciones.addAll(context.leerTranscripciones(filtroBusqueda))
+                    mostrarDialogoRenombrar = false
+                }
             },
-            dismissButton = { Button(onClick = { mostrarDialogoRenombrar = false }) { Text("Cancelar") } },
-            title = { Text("Renombrar carpeta") },
-            text = {
-                OutlinedTextField(
-                    value = nuevoNombreCarpeta,
-                    onValueChange = { nuevoNombreCarpeta = it },
-                    label = { Text("Nuevo nombre") }
-                )
-            }
+            onCancelar = { mostrarDialogoRenombrar = false }
         )
     }
 
     if (mostrarDialogoBorrar) {
-        AlertDialog(
-            onDismissRequest = { mostrarDialogoBorrar = false },
-            confirmButton = {
-                Button(onClick = {
-                    context.borrarCarpeta(carpetaActual)
-                    carpetas = context.obtenerCarpetas()
-                    carpetaActual = carpetas.firstOrNull() ?: "General"
-                    context.cambiarCarpeta(carpetaActual)
-                    transcripciones.clear()
-                    transcripciones.addAll(context.leerTranscripciones(filtroBusqueda))
-                    mostrarDialogoBorrar = false
-                }) { Text("Eliminar") }
+        DialogEliminarCarpeta(
+            carpetaActual,
+            onConfirmar = {
+                context.borrarCarpeta(carpetaActual)
+                carpetas = context.obtenerCarpetas()
+                carpetaActual = carpetas.firstOrNull() ?: "General"
+                context.cambiarCarpeta(carpetaActual)
+                transcripciones.clear()
+                transcripciones.addAll(context.leerTranscripciones(filtroBusqueda))
+                mostrarDialogoBorrar = false
             },
-            dismissButton = { Button(onClick = { mostrarDialogoBorrar = false }) { Text("Cancelar") } },
-            title = { Text("Eliminar carpeta") },
-            text = { Text("¿Seguro que deseas eliminar la carpeta '$carpetaActual'? Esta acción no se puede deshacer.") }
+            onCancelar = { mostrarDialogoBorrar = false }
         )
     }
 }
+
+@Composable
+private fun DialogCrearCarpeta(
+    nombre: String,
+    onNombreChange: (String) -> Unit,
+    onConfirmar: () -> Unit,
+    onCancelar: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onCancelar,
+        confirmButton = {
+            Button(onClick = onConfirmar) { Text("Crear") }
+        },
+        dismissButton = {
+            Button(onClick = onCancelar) { Text("Cancelar") }
+        },
+        title = { Text("Nueva carpeta") },
+        text = {
+            OutlinedTextField(
+                value = nombre,
+                onValueChange = onNombreChange,
+                label = { Text("Nombre de la carpeta") }
+            )
+        }
+    )
+}
+
+@Composable
+private fun DialogRenombrarCarpeta(
+    nuevoNombre: String,
+    onNombreChange: (String) -> Unit,
+    onConfirmar: () -> Unit,
+    onCancelar: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onCancelar,
+        confirmButton = {
+            Button(onClick = onConfirmar) { Text("Renombrar") }
+        },
+        dismissButton = {
+            Button(onClick = onCancelar) { Text("Cancelar") }
+        },
+        title = { Text("Renombrar carpeta") },
+        text = {
+            OutlinedTextField(
+                value = nuevoNombre,
+                onValueChange = onNombreChange,
+                label = { Text("Nuevo nombre") }
+            )
+        }
+    )
+}
+
+@Composable
+private fun DialogEliminarCarpeta(
+    carpeta: String,
+    onConfirmar: () -> Unit,
+    onCancelar: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onCancelar,
+        confirmButton = {
+            Button(onClick = onConfirmar) { Text("Eliminar") }
+        },
+        dismissButton = {
+            Button(onClick = onCancelar) { Text("Cancelar") }
+        },
+        title = { Text("Eliminar carpeta") },
+        text = {
+            Text("¿Seguro que deseas eliminar la carpeta '$carpeta'? Esta acción no se puede deshacer.")
+        }
+    )
+}
+
 
 
 @Composable

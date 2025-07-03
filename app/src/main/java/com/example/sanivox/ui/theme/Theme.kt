@@ -6,6 +6,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import com.example.sanivox.DarkModeController
 
 private val DarkColorScheme = darkColorScheme(
     primary = BlueLight,
@@ -35,7 +36,7 @@ private val LightColorScheme = lightColorScheme(
 
 @Composable
 fun SanivoxTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    darkTheme: Boolean = DarkModeController.darkMode.value,
     dynamicColor: Boolean = true,
     content: @Composable () -> Unit
 ) {

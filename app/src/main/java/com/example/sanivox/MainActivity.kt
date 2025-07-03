@@ -46,11 +46,13 @@ import androidx.compose.ui.text.style.TextAlign
 import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Settings
 import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
@@ -67,13 +69,10 @@ class MainActivity : ComponentActivity() {
     private var speechService: SpeechService? = null
     private var recognizer: Recognizer? = null
     private var keywordRecognizer: Recognizer? = null
-    private var keywordService: SpeechService? = null
+    var keywordService: SpeechService? = null
     private var recognizerThreadOcupado = false
+
     var actualizarTranscripciones: (() -> Unit)? = null
-
-
-
-
     var carpetaActual: String = "General"
     var transcripcionActiva: MutableState<Boolean> = mutableStateOf(false)
 
@@ -82,15 +81,25 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        solicitarPermisos()
+        DarkModeController.darkMode.value = obtenerPreferencia(this, "modo_oscuro", false)
+
+        // Si ya tenemos permisos, iniciamos la app normalmente
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            == PackageManager.PERMISSION_GRANTED) {
+            inicializarAplicacionConReconocimiento()
+        } else {
+            solicitarPermisos()
+        }
+    }
+
+    private fun inicializarAplicacionConReconocimiento() {
+        val modelo = "vosk-model-es-0.42"
+        val destino = File(filesDir, modelo)
 
         if (!packageManager.hasSystemFeature(PackageManager.FEATURE_MICROPHONE)) {
             Toast.makeText(this, "Este dispositivo no tiene micrófono", Toast.LENGTH_LONG).show()
             return
         }
-
-        val modelo = "vosk-model-es-0.42"
-        val destino = File(filesDir, modelo)
 
         if (!destino.exists()) {
             copiarModeloRecursivo(modelo, destino)
@@ -101,7 +110,8 @@ class MainActivity : ComponentActivity() {
         } else {
             Toast.makeText(this, "Modelo cargado correctamente", Toast.LENGTH_SHORT).show()
 
-            if (inicializarKeywordRecognizer()) {
+            val palabraClaveActiva = obtenerPreferencia(this, "palabra_clave_activa", true)
+            if (palabraClaveActiva && inicializarKeywordRecognizer()) {
                 escucharPalabraClave {
                     runOnUiThread {
                         if (speechService == null) {
@@ -115,7 +125,7 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            SanivoxTheme {
+            SanivoxTheme(darkTheme = DarkModeController.darkMode.value) {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     TranscriptionScreen(modifier = Modifier.padding(innerPadding))
                 }
@@ -137,6 +147,8 @@ class MainActivity : ComponentActivity() {
     ) { granted ->
         if (!granted) {
             Toast.makeText(this, "Permiso necesario para grabar audio", Toast.LENGTH_LONG).show()
+        } else {
+            inicializarAplicacionConReconocimiento()
         }
     }
 
@@ -179,16 +191,18 @@ class MainActivity : ComponentActivity() {
 
 
 
-    private fun inicializarKeywordRecognizer(): Boolean {
+     fun inicializarKeywordRecognizer(): Boolean {
         return try {
-            keywordRecognizer = Recognizer(model, 16000.0f, "[\"dakota\"]")
-            Log.d("Sanivox", "Recognizer de palabra clave inicializado")
+            val keyword = obtenerString(this, "palabra_clave", "dakota")
+            keywordRecognizer = Recognizer(model, 16000.0f, "[\"$keyword\"]")
+            Log.d("Sanivox", "Recognizer de palabra clave '$keyword' inicializado")
             true
         } catch (e: Exception) {
             Log.e("Sanivox", "Error al inicializar keywordRecognizer", e)
             false
         }
     }
+
 
 
 
@@ -219,8 +233,9 @@ class MainActivity : ComponentActivity() {
                 val texto = extraerTextoReconocido(hypothesis ?: "").trim()
                 Log.d("Sanivox", "Texto reconocido (keyword): '$texto'")
 
-                if (texto.equals("dakota", ignoreCase = true)) {
-                    Log.i("Sanivox", "Palabra clave exacta 'dakota' detectada.")
+                val keywordEsperada = obtenerString(this@MainActivity, "palabra_clave", "dakota")
+                if (texto.equals(keywordEsperada, ignoreCase = true)) {
+                    Log.i("Sanivox", "Palabra clave detectada.")
 
                     lifecycleScope.launch {
                         apagarKeywordServiceConEspera()
@@ -298,7 +313,8 @@ class MainActivity : ComponentActivity() {
                     override fun onPartialResult(hypothesis: String?) {
                         Log.d("Sanivox", "Parcial: $hypothesis")
                         val texto = extraerTextoReconocido(hypothesis ?: "").trim()
-                        if (texto.contains("dakota", ignoreCase = true)) {
+                        val palabraClave = obtenerString(this@MainActivity, "palabra_clave", "dakota")
+                        if (texto.contains(palabraClave, ignoreCase = true)) {
                             Log.i("Sanivox", "Palabra clave detectada dentro de transcripción activa. Deteniendo...")
                             detenerTranscripcion()
                         }
@@ -345,11 +361,16 @@ class MainActivity : ComponentActivity() {
 
 
     private fun guardarYActualizar(textoPlano: String, actualizarUI: () -> Unit) {
+        val palabraClave1 = obtenerString(this, "palabra_clave", "dakota")
         val limpio = textoPlano
-            .replace("\\bdakota\\b".toRegex(RegexOption.IGNORE_CASE), "")
+            .replace("\\b${Regex.escape(palabraClave1)}\\b".toRegex(RegexOption.IGNORE_CASE), "")
             .trim()
 
+
         if (limpio.isBlank()) return
+
+        val palabraClave2 = obtenerString(this, "palabra_clave", "dakota")
+        if (limpio.equals(palabraClave2, ignoreCase = true)) return
 
         val timestamp = SimpleDateFormat("dd-MM-yyyy HH:mm:ss", Locale.getDefault()).format(Date())
         val resultado = "$timestamp → $limpio"
@@ -403,9 +424,11 @@ class MainActivity : ComponentActivity() {
                         }
 
                         if (!recognizerThreadOcupado && speechService == null && keywordService == null) {
-                            escucharPalabraClave {
-                                if (speechService == null) {
-                                    iniciarTranscripcion {}
+                            if (obtenerPreferencia(this@MainActivity, "palabra_clave_activa", true)) {
+                                escucharPalabraClave {
+                                    if (speechService == null) {
+                                        iniciarTranscripcion {}
+                                    }
                                 }
                             }
                         } else {
@@ -781,12 +804,144 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+
+        DarkModeController.darkMode.value = obtenerPreferencia(this, "modo_oscuro", false)
+
+        if (obtenerPreferencia(this, "palabra_clave_activa", true)) {
+            if (keywordService == null && speechService == null) {
+                inicializarKeywordRecognizer()
+                escucharPalabraClave {
+                    Log.d("Sanivox", "Reconocimiento por palabra clave reactivado tras volver de ajustes")
+                }
+            } else {
+                Log.w("Sanivox", "No se inicia keywordService: ya hay servicios activos")
+            }
+        } else {
+            lifecycleScope.launch {
+                try {
+                    keywordService?.stop()
+                    keywordService?.shutdown()
+                    keywordService = null
+                    Log.d("Sanivox", "keywordService apagado correctamente desde onResume")
+                } catch (e: Exception) {
+                    Log.e("Sanivox", "Error al apagar keywordService desde onResume", e)
+                }
+            }
+        }
+    }
+
 }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SettingsScreen(
+    context: Context,
+    onBack: () -> Unit
+) {
+    val darkMode = remember { mutableStateOf(obtenerPreferencia(context, "modo_oscuro")) }
+    val keywordEnabled = remember { mutableStateOf(obtenerPreferencia(context, "palabra_clave_activa", true)) }
+    val palabraClave = remember { mutableStateOf(obtenerString(context, "palabra_clave", "dakota")) }
+
+    val backgroundColor = MaterialTheme.colorScheme.background
+    val textColor = MaterialTheme.colorScheme.onBackground
+
+    Surface(color = backgroundColor, modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("Ajustes", style = MaterialTheme.typography.headlineSmall, color = textColor)
+
+            Spacer(Modifier.height(16.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Modo oscuro", Modifier.weight(1f), color = textColor)
+                Switch(
+                    checked = darkMode.value,
+                    onCheckedChange = {
+                        darkMode.value = it
+                        guardarPreferencia(context, "modo_oscuro", it)
+                        DarkModeController.darkMode.value = it
+                    }
+                )
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Activar palabra clave", Modifier.weight(1f), color = textColor)
+                Switch(
+                    checked = keywordEnabled.value,
+                    onCheckedChange = {
+                        keywordEnabled.value = it
+                        guardarPreferencia(context, "palabra_clave_activa", it)
+
+                        if (context is MainActivity) {
+                            context.lifecycleScope.launch {
+                                context.keywordService?.stop()
+                                context.keywordService?.shutdown()
+                                context.keywordService = null
+                                if (it) {
+                                    context.inicializarKeywordRecognizer()
+                                    context.escucharPalabraClave {
+                                        context.iniciarTranscripcion {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                )
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            OutlinedTextField(
+                value = palabraClave.value,
+                onValueChange = {
+                    palabraClave.value = it
+                    guardarString(context, "palabra_clave", it)
+
+                    if (context is MainActivity) {
+                        context.lifecycleScope.launch {
+                            context.keywordService?.stop()
+                            context.keywordService?.shutdown()
+                            context.keywordService = null
+                            context.inicializarKeywordRecognizer()
+                            context.escucharPalabraClave {
+                                context.iniciarTranscripcion {}
+                            }
+                        }
+                    }
+                },
+                label = { Text("Palabra clave personalizada") },
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyLarge.copy(
+                    color = MaterialTheme.colorScheme.onBackground
+                ),
+                colors = TextFieldDefaults.outlinedTextFieldColors(
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                    unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                    cursorColor = MaterialTheme.colorScheme.primary,
+                    focusedLabelColor = MaterialTheme.colorScheme.primary,
+                    unfocusedLabelColor = MaterialTheme.colorScheme.onBackground
+                )
+            )
+
+            Spacer(Modifier.height(16.dp))
+
+            Button(onClick = onBack, modifier = Modifier.align(Alignment.End)) {
+                Text("Volver")
+            }
+        }
+    }
+}
+
+
 
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun TranscriptionScreen(modifier: Modifier = Modifier) {
+fun TranscriptionScreen(
+    modifier: Modifier = Modifier,
+    onOpenSettings: () -> Unit = {}
+) {
     val context = LocalContext.current as MainActivity
     val transcripciones = remember { mutableStateListOf<String>() }
     var filtroBusqueda by remember { mutableStateOf("") }
@@ -797,7 +952,7 @@ fun TranscriptionScreen(modifier: Modifier = Modifier) {
     val transcripcionesSeleccionadas = remember { mutableStateListOf<String>() }
     var modoSeleccion by remember { mutableStateOf(false) }
 
-    // Menús desplegables
+    // Estados para menús
     var menuCarpetaExpandido by remember { mutableStateOf(false) }
     var menuOpcionesExpandido by remember { mutableStateOf(false) }
     var mostrarDialogoCrear by remember { mutableStateOf(false) }
@@ -827,10 +982,43 @@ fun TranscriptionScreen(modifier: Modifier = Modifier) {
 
     Column(modifier = modifier.fillMaxSize().padding(16.dp)) {
 
-        // SECCIÓN SUPERIOR: Carpeta activa y menú
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        // Cabecera con grabacion,carpeta y ajustes
+        if (transcripcionActiva.value) {
+            val alphaAnim by animateFloatAsState(
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(durationMillis = 1000, easing = FastOutSlowInEasing),
+                    repeatMode = RepeatMode.Reverse
+                ), label = ""
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 4.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    "● Grabando...",
+                    color = Color.Red,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.alpha(alphaAnim)
+                )
+            }
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Column {
-                Text("Carpeta activa:", style = MaterialTheme.typography.labelLarge)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Carpeta activa:", style = MaterialTheme.typography.labelLarge)
+                    Spacer(Modifier.width(8.dp))
+                }
+                Spacer(Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Button(onClick = { menuCarpetaExpandido = true }) {
                         Text(carpetaActual)
@@ -883,6 +1071,14 @@ fun TranscriptionScreen(modifier: Modifier = Modifier) {
                     }
                 }
             }
+
+            val activity = LocalContext.current
+            IconButton(onClick = {
+                val intent = android.content.Intent(activity, SettingsActivity::class.java)
+                activity.startActivity(intent)
+            }) {
+                Icon(Icons.Default.Settings, contentDescription = "Ajustes")
+            }
         }
 
         Spacer(Modifier.height(12.dp))
@@ -910,25 +1106,6 @@ fun TranscriptionScreen(modifier: Modifier = Modifier) {
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            if (transcripcionActiva.value) {
-                val alphaAnim by animateFloatAsState(
-                    targetValue = 1f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(durationMillis = 1000, easing = FastOutSlowInEasing),
-                        repeatMode = RepeatMode.Reverse
-                    ), label = ""
-                )
-                Box(Modifier.fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) {
-                    Text(
-                        "● Grabando...",
-                        color = Color.Red,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.alpha(alphaAnim)
-                    )
-                }
-            }
-
             if (transcripciones.isEmpty()) {
                 Text("Esperando transcripción...", style = MaterialTheme.typography.bodyLarge)
             } else {

@@ -28,13 +28,12 @@ android {
     }
 
     compileOptions {
-        // Usa Java 17 si ya actualizaste JDK y AGP
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
 
     kotlinOptions {
-        jvmTarget = "17" // Alineado con Java 17
+        jvmTarget = "17"
     }
 
     buildFeatures {
@@ -42,7 +41,7 @@ android {
     }
 
     composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.13" // actualiza según el BOM
+        kotlinCompilerExtensionVersion = "1.5.13"
     }
 
     androidResources {
@@ -61,17 +60,14 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
 
-    // Vosk reconocimiento offline
     implementation(libs.vosk.android)
 
-    // Tests
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.ui.test.junit4)
 
-    // Debug tools
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
 }

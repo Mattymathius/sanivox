@@ -958,6 +958,8 @@ fun TranscriptionScreen(
     var mostrarDialogoCrear by remember { mutableStateOf(false) }
     var mostrarDialogoRenombrar by remember { mutableStateOf(false) }
     var mostrarDialogoBorrar by remember { mutableStateOf(false) }
+    var mostrarConfirmacionBorrarTodas by remember { mutableStateOf(false) }
+    var mostrarConfirmacionBorrarSeleccionadas by remember { mutableStateOf(false) }
     var menuCompartirExpandido by remember { mutableStateOf(false) }
     var menuBorrarExpandido by remember { mutableStateOf(false) }
 
@@ -1212,22 +1214,14 @@ fun TranscriptionScreen(
                         DropdownMenuItem(
                             text = { Text("Borrar todas") },
                             onClick = {
-                                context.borrarTranscripciones()
-                                transcripciones.clear()
-                                transcripcionesSeleccionadas.clear()
-                                modoSeleccion = false
+                                mostrarConfirmacionBorrarTodas = true
                                 menuBorrarExpandido = false
                             }
                         )
                         DropdownMenuItem(
                             text = { Text("Borrar seleccionadas") },
                             onClick = {
-                                transcripcionesSeleccionadas.forEach {
-                                    context.eliminarTranscripcion(it)
-                                    transcripciones.remove(it)
-                                }
-                                transcripcionesSeleccionadas.clear()
-                                modoSeleccion = false
+                                mostrarConfirmacionBorrarSeleccionadas = true
                                 menuBorrarExpandido = false
                             }
                         )
@@ -1317,6 +1311,66 @@ fun TranscriptionScreen(
             onCancelar = { mostrarDialogoBorrar = false }
         )
     }
+
+    if (mostrarConfirmacionBorrarTodas) {
+        AlertDialog(
+            onDismissRequest = { mostrarConfirmacionBorrarTodas = false },
+            title = { Text("Confirmar borrado") },
+            text = { Text("¿Seguro que deseas borrar TODAS las transcripciones de la carpeta '$carpetaActual'? Esta acción no se puede deshacer.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        context.borrarTranscripciones()
+                        transcripciones.clear()
+                        transcripcionesSeleccionadas.clear()
+                        modoSeleccion = false
+                        mostrarConfirmacionBorrarTodas = false
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("Borrar", color = MaterialTheme.colorScheme.onError)
+                }
+            },
+            dismissButton = {
+                Button(onClick = { mostrarConfirmacionBorrarTodas = false }) {
+                    Text("Cancelar")
+                }
+            }
+        )
+    }
+
+    if (mostrarConfirmacionBorrarSeleccionadas) {
+        AlertDialog(
+            onDismissRequest = { mostrarConfirmacionBorrarSeleccionadas = false },
+            title = { Text("Confirmar borrado") },
+            text = { Text("¿Seguro que deseas borrar las transcripciones seleccionadas? Esta acción no se puede deshacer.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        transcripcionesSeleccionadas.forEach {
+                            context.eliminarTranscripcion(it)
+                            transcripciones.remove(it)
+                        }
+                        transcripcionesSeleccionadas.clear()
+                        modoSeleccion = false
+                        mostrarConfirmacionBorrarSeleccionadas = false
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("Borrar", color = MaterialTheme.colorScheme.onError)
+                }
+            },
+            dismissButton = {
+                Button(onClick = { mostrarConfirmacionBorrarSeleccionadas = false }) {
+                    Text("Cancelar")
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -1379,15 +1433,24 @@ private fun DialogEliminarCarpeta(
 ) {
     AlertDialog(
         onDismissRequest = onCancelar,
-        confirmButton = {
-            Button(onClick = onConfirmar) { Text("Eliminar") }
-        },
-        dismissButton = {
-            Button(onClick = onCancelar) { Text("Cancelar") }
-        },
         title = { Text("Eliminar carpeta") },
         text = {
-            Text("¿Seguro que deseas eliminar la carpeta '$carpeta'? Esta acción no se puede deshacer.")
+            Text("¿Seguro que deseas eliminar la carpeta '$carpeta'? Esta acción eliminará todas las transcripciones contenidas y no se puede deshacer.")
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirmar,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error
+                )
+            ) {
+                Text("Borrar", color = MaterialTheme.colorScheme.onError)
+            }
+        },
+        dismissButton = {
+            Button(onClick = onCancelar) {
+                Text("Cancelar")
+            }
         }
     )
 }
